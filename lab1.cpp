@@ -48,8 +48,8 @@ void write_matrix_file(const std::vector<std::vector<int>>& matrix, const std::s
 
 int main() {
     srand(time(nullptr));
-    std::vector<int> sizes = { 100, 250, 500, 750, 1000, 1500 };
-    int iter = 6;
+    std::vector<int> sizes = { 100, 250, 500, 750, 1000 };
+    int iter = 5;
     std::ofstream time_file("avg_times.txt");
     for (int size : sizes) {
         auto total_duration = std::chrono::milliseconds(0);
