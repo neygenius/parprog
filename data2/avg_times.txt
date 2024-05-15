@@ -1,0 +1,5 @@
+100 - mean: 6.2 ms; 95% Confidence Interval: (2.99613, 9.40387) ms
+250 - mean: 20.7 ms; 95% Confidence Interval: (11.5695, 29.8305) ms
+500 - mean: 109.933 ms; 95% Confidence Interval: (45.7696, 174.097) ms
+750 - mean: 382.7 ms; 95% Confidence Interval: (166.778, 598.622) ms
+1000 - mean: 931.6 ms; 95% Confidence Interval: (467.804, 1395.4) ms
