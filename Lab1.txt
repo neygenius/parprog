@@ -1,0 +1,332 @@
+#include <iostream>
+#include <windows.h>
+#include <lm.h>
+#include <string>
+#include <vector>
+#include <filesystem>
+
+#pragma comment(lib, "netapi32.lib")
+#pragma comment(lib, "mpr.lib")
+
+using namespace std;
+
+// Структура для хранения данных о серверах
+struct ServerInfo {
+    wstring name;
+};
+
+// Функция для получения списка удаленных машин
+vector<ServerInfo> getRemoteMachines() {
+    vector<ServerInfo> servers;
+
+    PSERVER_INFO_100 pBuf = NULL;
+    PSERVER_INFO_100 pTmpBuf;
+    DWORD dwEntriesRead = 0;
+    DWORD dwTotalEntries = 0;
+    DWORD dwResumeHandle = 0;
+    NET_API_STATUS nStatus;
+    LPCWSTR pszServerName = NULL;  // NULL для локального домена
+    DWORD dwLevel = 100;  // Уровень 100, чтобы получить только имена серверов
+    DWORD dwPrefMaxLen = MAX_PREFERRED_LENGTH;
+    DWORD dwServerType = SV_TYPE_WORKSTATION | SV_TYPE_SERVER;  // Типы серверов (рабочие станции и серверы)
+
+    nStatus = NetServerEnum(
+        pszServerName,
+        dwLevel,
+        (LPBYTE*)&pBuf,
+        dwPrefMaxLen,
+        &dwEntriesRead,
+        &dwTotalEntries,
+        dwServerType,
+        NULL,
+        &dwResumeHandle
+    );
+
+    if ((nStatus == NERR_Success || nStatus == ERROR_MORE_DATA) && pBuf != NULL) {
+        pTmpBuf = pBuf;
+
+        for (DWORD i = 0; i < dwEntriesRead; i++) {
+            if (pTmpBuf == NULL) {
+                break;
+            }
+            wstring serverName = L"\\\\" + wstring(pTmpBuf->sv100_name);
+            servers.push_back({ serverName });
+            pTmpBuf++;
+        }
+    }
+    else {
+        wcout << L"Failed to enumerate servers. Error: " << nStatus << endl;
+    }
+
+    if (pBuf != NULL) {
+        NetApiBufferFree(pBuf);
+    }
+
+    return servers;
+}
+
+// Функция для выбора удаленной машины
+wstring chooseRemoteMachine(const vector<ServerInfo>& servers) {
+    int choice;
+    wcout << L"Select remote machine:" << endl;
+    for (size_t i = 0; i < servers.size(); i++) {
+        wcout << i + 1 << L". " << servers[i].name << endl;
+    }
+    wcout << L"Enter number: ";
+    cin >> choice;
+
+    if (choice > 0 && choice <= servers.size()) {
+        return servers[choice - 1].name;
+    }
+    else {
+        wcout << L"Invalid choice, defaulting to local machine." << endl;
+        return L"";
+    }
+}
+
+// Функция для ввода учетных данных
+void getUserCredentials(wstring& username, wstring& password) {
+    wcout << L"Enter username: ";
+    wcin.ignore();
+    getline(wcin, username);
+
+    wcout << L"Enter password: ";
+    getline(wcin, password);
+}
+
+bool connectToNetworkResource(const std::wstring& networkPath, const std::wstring& userName, const std::wstring& password) {
+    NETRESOURCE nr;
+    DWORD result;
+
+    ZeroMemory(&nr, sizeof(nr));
+    nr.dwType = RESOURCETYPE_DISK;
+    nr.lpLocalName = NULL;  // Указываем NULL, если не подключаем диск локально
+    nr.lpRemoteName = const_cast<LPWSTR>(networkPath.c_str());  // Удаленный ресурс
+    nr.lpProvider = NULL;   // Обычно NULL, если не используется провайдер
+
+    result = WNetAddConnection2(&nr, const_cast<LPWSTR>(password.c_str()), const_cast<LPWSTR>(userName.c_str()), 0);
+
+    if (result == NO_ERROR) {
+        std::wcout << L"Successfully connected to " << networkPath << std::endl;
+        return true;
+    }
+    else {
+        std::wcout << L"Failed to connect to " << networkPath << L". Error: " << result << std::endl;
+        return false;
+    }
+}
+
+
+// Функция для перечисления общих ресурсов
+void enumNetworkShares(const wchar_t* serverName) {
+    PSHARE_INFO_502 pBuf = NULL;
+
+    DWORD dwEntriesRead = 0, dwTotalEntries = 0, dwResumeHandle = 0;
+    NET_API_STATUS nStatus;
+
+    nStatus = NetShareEnum(
+        const_cast<LPWSTR>(serverName),
+        502,
+        (LPBYTE*)&pBuf,
+        MAX_PREFERRED_LENGTH,
+        &dwEntriesRead,
+        &dwTotalEntries,
+        &dwResumeHandle
+    );
+
+    if (nStatus == NERR_Success || nStatus == ERROR_MORE_DATA) {
+        PSHARE_INFO_502 pTmpBuf = pBuf;
+        for (DWORD i = 0; i < dwEntriesRead; i++) {
+            if (pTmpBuf == NULL) break;
+            wcout << L"Share name: " << pTmpBuf->shi502_netname << endl;
+            wcout << L"Path: " << pTmpBuf->shi502_path << endl;
+            wcout << L"--------------------------------------" << endl;
+            pTmpBuf++;
+        }
+    }
+    else {
+        wcout << L"Error: " << nStatus << endl;
+    }
+
+    if (pBuf != NULL) {
+        NetApiBufferFree(pBuf);
+    }
+}
+
+bool createDirectory(const wstring& path) {
+    // Используем CreateDirectory из Windows API
+    return CreateDirectory(path.c_str(), NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+bool createNetworkShare(const wchar_t* serverName, const std::wstring& shareName, const std::wstring& path, const std::wstring& description) {
+    SHARE_INFO_502 shareInfo;
+    DWORD result;
+
+    ZeroMemory(&shareInfo, sizeof(shareInfo));
+    shareInfo.shi502_netname = const_cast<LPWSTR>(shareName.c_str());  // Имя общего ресурса
+    shareInfo.shi502_type = STYPE_DISKTREE;  // Тип ресурса (диск)
+    shareInfo.shi502_remark = const_cast<LPWSTR>(description.c_str()); // Описание общего ресурса
+    shareInfo.shi502_permissions = ACCESS_ALL; // Права доступа (полные права)
+    shareInfo.shi502_max_uses = -1; // Не ограничивать количество подключений
+    shareInfo.shi502_path = const_cast<LPWSTR>(path.c_str()); // Путь к общей папке
+    shareInfo.shi502_passwd = NULL; // Пароль (если не используется)
+
+    result = NetShareAdd(const_cast<LPWSTR>(serverName), 502, (LPBYTE)&shareInfo, NULL);
+
+    if (result == NERR_Success) {
+        std::wcout << L"Successfully added share: " << shareName << std::endl;
+        return true;
+    }
+    else {
+        std::wcout << L"Failed to add share. Error: " << result << std::endl;
+        // Выводим подробное сообщение об ошибке
+        LPVOID lpMsgBuf;
+        FormatMessage(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+            NULL,
+            result,
+            0,
+            (LPWSTR)&lpMsgBuf,
+            0,
+            NULL
+        );
+
+        LocalFree(lpMsgBuf);
+        return false;
+    }
+}
+
+bool disconnectFromNetworkResource(const std::wstring& networkPath, bool forceClose) {
+    DWORD result = WNetCancelConnection2(networkPath.c_str(), 0, forceClose);
+
+    if (result == NO_ERROR) {
+        std::wcout << L"Successfully disconnected from " << networkPath << std::endl;
+        return true;
+    }
+    else {
+        std::wcout << L"Failed to disconnect from " << networkPath << L". Error: " << result << std::endl;
+        return false;
+    }
+}
+
+int main() {
+    vector<ServerInfo> servers = getRemoteMachines();
+
+    int choice;
+    wstring serverName;
+    wstring username;
+    wstring password;
+    bool exitFlag = false;
+
+
+
+    while (!exitFlag) {
+        wcout << L"1. View network shares" << endl;
+        wcout << L"2. Delete a network share" << endl;
+        wcout << L"0. Exit" << endl;
+        wcout << L"Enter your choice: ";
+        cin >> choice;
+
+        switch (choice) {
+        case 1: {
+            serverName = chooseRemoteMachine(servers);
+
+            enumNetworkShares(serverName.empty() ? NULL : serverName.c_str());
+
+            break;
+        }
+        case 2: {
+            wstring networkPath;
+            wcout << L"Enter network path to disconnect: ";
+            wcin.ignore();
+            getline(wcin, networkPath);
+
+            bool forceClose = true;  // Set to true to force close the connection
+            disconnectFromNetworkResource(networkPath, forceClose);
+            break;
+        }
+        case 0:
+            exitFlag = true;
+            break;
+        default:
+            wcout << L"Invalid choice. Please try again." << endl;
+        }
+    }
+
+
+
+    //NETRESOURCE nr;
+    //memset(&nr, 0, sizeof(nr));
+    //nr.dwType = RESOURCETYPE_DISK;
+    //nr.lpRemoteName = const_cast<LPWSTR>(L"\\\\DESKTOP-MGCLDV2");
+
+    //DWORD result = WNetAddConnection2(&nr, L"1234", L"test", 0);
+    //if (result != NO_ERROR) {
+    //    wcout << L"Failed to connect. Error: " << result << endl;
+    //}
+    //else {
+    //    // Теперь можно использовать NetShareEnum
+    //    PSHARE_INFO_502 pBuf = NULL;
+    //    DWORD dwEntriesRead = 0, dwTotalEntries = 0, dwResumeHandle = 0;
+    //    NET_API_STATUS nStatus;
+
+    //    nStatus = NetShareEnum(
+    //        const_cast<LPWSTR>(L"\\\\DESKTOP-MGCLDV2"),
+    //        502,
+    //        (LPBYTE*)&pBuf,
+    //        MAX_PREFERRED_LENGTH,
+    //        &dwEntriesRead,
+    //        &dwTotalEntries,
+    //        &dwResumeHandle
+    //    );
+
+    //    if (nStatus == NERR_Success || nStatus == ERROR_MORE_DATA) {
+    //        PSHARE_INFO_502 pTmpBuf = pBuf;
+    //        for (DWORD i = 0; i < dwEntriesRead; i++) {
+    //            if (pTmpBuf == NULL) break;
+    //            wcout << L"Share name: " << pTmpBuf->shi502_netname << endl;
+    //            wcout << L"Path: " << pTmpBuf->shi502_path << endl;
+    //            wcout << L"--------------------------------------" << endl;
+    //            pTmpBuf++;
+    //        }
+    //    }
+    //    else {
+    //        wcout << L"Error: " << nStatus << endl;
+    //    }
+
+    //    if (pBuf != NULL) {
+    //        NetApiBufferFree(pBuf);
+    //    }
+    //}
+
+
+    //SHARE_INFO_502 si502;
+    //NET_API_STATUS nStatus;
+    //DWORD parmErr;
+
+    //// Обнуляем структуру
+    //ZeroMemory(&si502, sizeof(si502));
+
+
+    //// Заполняем структуру SHARE_INFO_502
+    //si502.shi502_netname = const_cast<LPWSTR>(L"Test");
+    //si502.shi502_type = STYPE_DISKTREE; // Тип общего ресурса
+    //si502.shi502_remark = NULL; // Комментарий, если нужен
+    //si502.shi502_permissions = ACCESS_READ; // Права доступа
+    //si502.shi502_max_uses = -1; // Неограниченное количество подключений
+    //si502.shi502_current_uses = 0; // Текущее количество подключений
+    //si502.shi502_path = const_cast<LPWSTR>(L"C:/Server");
+    //si502.shi502_passwd = NULL; // Пароль, если нужен
+    //si502.shi502_reserved = 0;
+    //si502.shi502_security_descriptor = NULL; // Дескриптор безопасности, если нужен
+
+    //// Вызов NetShareAdd для добавления общего ресурса
+    //nStatus = NetShareAdd(
+    //    serverName.empty() ? NULL : const_cast<LPWSTR>(serverName.c_str()),
+    //    502,
+    //    (LPBYTE)&si502,
+    //    &parmErr
+    //);
+
+    return 0;
+}
